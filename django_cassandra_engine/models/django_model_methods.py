@@ -27,13 +27,13 @@ def serializable_value(self, field_name):
     return getattr(self, field.attname)
 
 
-def full_clean(self, exclude=None, validate_unique=True):
+def full_clean(self, exclude=None, validate_unique=True, validate_constraints=True):
     # Taken from django.db.models.base
     errors = {}
     if exclude is None:
-        exclude = []
+        exclude = set()
     else:
-        exclude = list(exclude)
+        exclude = set(exclude)
 
     try:
         self.clean_fields(exclude=exclude)
@@ -49,11 +49,21 @@ def full_clean(self, exclude=None, validate_unique=True):
 
     # Run unique checks, but only for fields that passed validation.
     if validate_unique:
-        for name in errors.keys():
+        for name in errors:
             if name != NON_FIELD_ERRORS and name not in exclude:
-                exclude.append(name)
+                exclude.add(name)
         try:
             self.validate_unique(exclude=exclude)
+        except ValidationError as e:
+            errors = e.update_error_dict(errors)
+
+    # Run constraints checks, but only for fields that passed validation.
+    if validate_constraints:
+        for name in errors:
+            if name != NON_FIELD_ERRORS and name not in exclude:
+                exclude.add(name)
+        try:
+            self.validate_constraints(exclude=exclude)
         except ValidationError as e:
             errors = e.update_error_dict(errors)
 
@@ -196,6 +206,31 @@ def validate_unique(self, exclude=None):
     for k, v in date_errors.items():
         errors.setdefault(k, []).extend(v)
 
+    if errors:
+        raise ValidationError(errors)
+
+
+def get_constraints(self):
+    constraints = [(self.__class__, self._meta.constraints)]
+    for parent_class in self._meta.get_parent_list():
+        if parent_class._meta.constraints:
+            constraints.append((parent_class, parent_class._meta.constraints))
+    return constraints
+
+
+def validate_constraints(self, exclude=None):
+    constraints = self.get_constraints()
+
+    errors = {}
+    for model_class, model_constraints in constraints:
+        for constraint in model_constraints:
+            try:
+                constraint.validate(model_class, self, exclude=exclude)
+            except ValidationError as e:
+                if getattr(e, "code", None) == "unique" and len(constraint.fields) == 1:
+                    errors.setdefault(constraint.fields[0], []).append(e)
+                else:
+                    errors = e.update_error_dict(errors)
     if errors:
         raise ValidationError(errors)
 
