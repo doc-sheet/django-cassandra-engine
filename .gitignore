@@ -10,3 +10,4 @@ site/
 README.rst
 .cache/
 .package/
+.venv
